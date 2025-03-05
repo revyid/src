@@ -1,1 +1,116 @@
-<h1>THIS IS AN ASSET PROVIDER WEBSITE</h2>
+<!DOCTYPE html>
+<html lang="id" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RevyNext - Beranda</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        'primary': {
+                            light: '#3B82F6',
+                            dark: '#1E40AF'
+                        },
+                        'background': {
+                            light: '#F3F4F6',
+                            dark: '#1F2937'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fadeIn 0.6s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-background-light text-gray-900 dark:bg-background-dark dark:text-white transition-colors duration-300">
+    <div class="container mx-auto px-4 max-w-6xl">
+        <!-- Header -->
+        <header class="flex justify-between items-center py-6 animate-fade-in">
+            <div class="flex items-center space-x-4">
+                <img src="/api/placeholder/50/50" alt="RevyNext Logo" class="w-12 h-12 rounded-full">
+                <h1 class="text-2xl font-bold text-primary-light dark:text-primary-dark">RevyNext</h1>
+            </div>
+            
+            <!-- Mode Toggle -->
+            <button id="mode-toggle" class="p-2 rounded-full bg-gray-200 dark:bg-gray-700 transition-colors">
+                <svg id="theme-icon" xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path id="sun-icon" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m3.343-5.657l-.707-.707m12.728 12.728l.707.707" />
+                    <path id="moon-icon" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" class="hidden" />
+                </svg>
+            </button>
+        </header>
+
+        <!-- Main Content -->
+        <main class="mt-12 animate-fade-in">
+            <section class="text-center">
+                <h2 class="text-4xl font-extrabold mb-4 text-primary-light dark:text-primary-dark">Selamat Datang di RevyNext</h2>
+                <p class="text-xl text-gray-600 dark:text-gray-300 max-w-2xl mx-auto">
+                    Aplikasi canggih yang dirancang untuk memberikan pengalaman terbaik dalam setiap interaksi.
+                </p>
+            </section>
+
+            <!-- Feature Cards -->
+            <div class="grid md:grid-cols-3 gap-6 mt-12">
+                <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-2">
+                    <h3 class="text-xl font-semibold mb-4 text-primary-light dark:text-primary-dark">Fitur Pertama</h3>
+                    <p class="text-gray-600 dark:text-gray-300">Inovasi terkini yang membuat aplikasi Anda lebih cerdas dan responsif.</p>
+                </div>
+                <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-2">
+                    <h3 class="text-xl font-semibold mb-4 text-primary-light dark:text-primary-dark">Fitur Kedua</h3>
+                    <p class="text-gray-600 dark:text-gray-300">Desain modern dengan antarmuka yang intuitif dan mudah digunakan.</p>
+                </div>
+                <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md hover:shadow-xl transition-all duration-300 transform hover:-translate-y-2">
+                    <h3 class="text-xl font-semibold mb-4 text-primary-light dark:text-primary-dark">Fitur Ketiga</h3>
+                    <p class="text-gray-600 dark:text-gray-300">Performa tinggi dengan konsumsi sumber daya yang efisien.</p>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="mt-16 py-6 text-center animate-fade-in">
+            <p class="text-gray-500 dark:text-gray-400">&copy; 2024 RevyNext. Hak Cipta Dilindungi.</p>
+        </footer>
+    </div>
+
+    <script>
+        // Dark Mode Toggle
+        const modeToggle = document.getElementById('mode-toggle');
+        const htmlElement = document.documentElement;
+        const sunIcon = document.getElementById('sun-icon');
+        const moonIcon = document.getElementById('moon-icon');
+
+        // Check saved theme or system preference
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            htmlElement.classList.add('dark');
+            sunIcon.classList.add('hidden');
+            moonIcon.classList.remove('hidden');
+        }
+
+        modeToggle.addEventListener('click', () => {
+            if (htmlElement.classList.contains('dark')) {
+                htmlElement.classList.remove('dark');
+                localStorage.theme = 'light';
+                sunIcon.classList.remove('hidden');
+                moonIcon.classList.add('hidden');
+            } else {
+                htmlElement.classList.add('dark');
+                localStorage.theme = 'dark';
+                sunIcon.classList.add('hidden');
+                moonIcon.classList.remove('hidden');
+            }
+        });
+    </script>
+</body>
+</html>
