@@ -1,0 +1,1648 @@
+USER = 
+buatkan saya project yang integration dengan pocketbase, fiturnya
+1.  contoh fungsi seperti XDAFORM (form, balas, like, dll)
+2.  Group, Pesan pribadi
+3.  Profile seperti github ( bisa edit foto profile, username, id, deskripsi, status dan tag, deskripsi profile, dan kustomasi dengan script berbasis .md )
+4.  Di profile ditampilkan data total followers, post(form), like, dan form yang di post
+5.  authentication dengan google dan github
+6.  saat user pertama kali login auto disuruh setup
+7. pakai pocketbase-typegen
+Gunakan UIUX yg simple dan sederhana dulu, fokuskan kepada fungsi
+Menggunakan Typescript, framework nextjs v15, path @/*
+Semua data disimpan di Pocketbase
+
+AI =
+# PocketBase Social Platform
+
+This is a comprehensive social platform built with Next.js 15, TypeScript, and PocketBase, featuring form interactions, messaging, profiles, and authentication.
+
+## Project Structure
+
+```
+/
+├── src/
+│   ├── app/
+│   │   ├── (auth)/
+│   │   │   ├── login/
+│   │   │   ├── register/
+│   │   │   └── setup/
+│   │   ├── (protected)/
+│   │   │   ├── dashboard/
+│   │   │   ├── profile/[username]/
+│   │   │   ├── groups/
+│   │   │   │   ├── [id]/
+│   │   │   ├── messages/
+│   │   │   │   ├── [id]/
+│   │   │   ├── forms/
+│   │   │   │   ├── [id]/
+│   │   │   │   ├── create/
+│   │   ├── api/
+│   │   │   ├── auth/
+│   │   │   ├── forms/
+│   │   │   ├── groups/
+│   │   │   ├── messages/
+│   │   │   ├── users/
+│   │   │   └── webhooks/
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── components/
+│   │   ├── auth/
+│   │   ├── forms/
+│   │   ├── groups/
+│   │   ├── messages/
+│   │   ├── profile/
+│   │   ├── ui/
+│   │   └── layout/
+│   ├── lib/
+│   │   ├── pocketbase/
+│   │   ├── hooks/
+│   │   ├── utils/
+│   │   └── context/
+│   └── types/
+├── pocketbase/
+│   ├── pb_migrations/
+│   └── pb_data/
+├── next.config.mjs
+├── tailwind.config.js
+├── tsconfig.json
+└── package.json
+```
+
+// pocketbase-schema.ts
+
+// Users collection is built-in, we'll extend it with our fields
+export interface UsersResponse {
+    id: string;
+    username: string;
+    email: string;
+    name: string;
+    avatar: string;
+    bio: string;
+    status: string;
+    tags: string[];
+    customMd: string;
+    isSetupComplete: boolean;
+    postsCount: number;
+    likesCount: number;
+    followersCount: number;
+    followingCount: number;
+    created: string;
+    updated: string;
+}
+
+export interface FormsResponse {
+    id: string;
+    title: string;
+    content: string;
+    user: string; // relation to Users
+    likes: string[]; // relation to Users
+    replies: string[]; // relation to Forms
+    parentForm: string; // relation to Forms (for replies)
+    created: string;
+    updated: string;
+}
+
+export interface GroupsResponse {
+    id: string;
+    name: string;
+    description: string;
+    avatar: string;
+    members: string[]; // relation to Users
+    admins: string[]; // relation to Users
+    created: string;
+    updated: string;
+}
+
+export interface MessagesResponse {
+    id: string;
+    content: string;
+    sender: string; // relation to Users
+    receiver: string; // relation to Users (for private messages)
+    group: string; // relation to Groups (for group messages)
+    isGroupMessage: boolean;
+    isRead: boolean;
+    created: string;
+    updated: string;
+}
+
+export interface FollowsResponse {
+    id: string;
+    follower: string; // relation to Users
+    following: string; // relation to Users
+    created: string;
+}
+
+export interface LikesResponse {
+    id: string;
+    user: string; // relation to Users
+    form: string; // relation to Forms
+    created: string;
+}
+
+// src/lib/pocketbase/client.ts
+import PocketBase from 'pocketbase';
+
+// Create a single PocketBase instance for the whole app
+export const createPocketBase = () => {
+    return new PocketBase(process.env.NEXT_PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090');
+};
+
+// Client-side singleton
+let pb: PocketBase | null = null;
+
+export const getPocketBase = () => {
+    if (typeof window === 'undefined') {
+        // Server-side: always create a new instance
+        return createPocketBase();
+    }
+    
+    // Client-side: reuse the instance
+    if (!pb) {
+        pb = createPocketBase();
+    }
+    
+    return pb;
+};
+
+// Hook to use PocketBase throughout the app
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+export const usePocketBase = () => {
+    const pb = getPocketBase();
+    const router = useRouter();
+    const [isAuthenticated, setIsAuthenticated] = useState(pb.authStore.isValid);
+    const [currentUser, setCurrentUser] = useState(pb.authStore.model);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        // Set up auth store change listener
+        const unsubscribe = pb.authStore.onChange((token, model) => {
+            setIsAuthenticated(pb.authStore.isValid);
+            setCurrentUser(model);
+            
+            // Redirect to setup page if user is authenticated but setup isn't complete
+            if (pb.authStore.isValid && model && !model.isSetupComplete) {
+                router.push('/setup');
+            }
+        });
+
+        // Check initial auth state
+        setIsLoading(false);
+
+        return () => {
+            unsubscribe();
+        };
+    }, [router]);
+
+    const login = async (usernameOrEmail: string, password: string) => {
+        try {
+            await pb.collection('users').authWithPassword(usernameOrEmail, password);
+            return { success: true };
+        } catch (error) {
+            return { success: false, error };
+        }
+    };
+
+    const loginWithOAuth = async (provider: 'google' | 'github') => {
+        try {
+            // Redirect URL after successful authentication
+            const redirectUrl = `${window.location.origin}/auth-callback`;
+            
+            // Prepare the authentication URL
+            const authUrl = pb.collection('users').authWithOAuth2Url(provider, redirectUrl);
+            
+            // Redirect to the authentication URL
+            window.location.href = authUrl;
+            
+            return { success: true };
+        } catch (error) {
+            return { success: false, error };
+        }
+    };
+
+    const logout = () => {
+        pb.authStore.clear();
+        router.push('/login');
+    };
+
+    return {
+        pb,
+        isAuthenticated,
+        currentUser,
+        isLoading,
+        login,
+        loginWithOAuth,
+        logout
+    };
+};
+
+// src/lib/pocketbase/collections.ts
+import { getPocketBase } from './client';
+import { Collections, UsersResponse, FormsResponse, GroupsResponse, MessagesResponse } from '../../types/pocketbase-types';
+
+// Users
+export const getUser = async (userId: string) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Users).getOne<UsersResponse>(userId);
+};
+
+export const getUserByUsername = async (username: string) => {
+    const pb = getPocketBase();
+    const response = await pb.collection(Collections.Users).getList<UsersResponse>(1, 1, {
+        filter: `username = "${username}"`
+    });
+    
+    return response.items[0] || null;
+};
+
+export const updateUser = async (userId: string, data: Partial<UsersResponse>) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Users).update<UsersResponse>(userId, data);
+};
+
+// Forms
+export const createForm = async (data: { title: string, content: string, parentForm?: string }) => {
+    const pb = getPocketBase();
+    const userId = pb.authStore.model?.id;
+    
+    if (!userId) throw new Error('User not authenticated');
+    
+    return await pb.collection(Collections.Forms).create<FormsResponse>({
+        ...data,
+        user: userId,
+        likes: [],
+        replies: []
+    });
+};
+
+export const getForms = async (page = 1, perPage = 20) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Forms).getList<FormsResponse>(page, perPage, {
+        filter: 'parentForm = null',
+        sort: '-created',
+        expand: 'user'
+    });
+};
+
+export const getFormReplies = async (formId: string, page = 1, perPage = 20) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Forms).getList<FormsResponse>(page, perPage, {
+        filter: `parentForm = "${formId}"`,
+        sort: 'created',
+        expand: 'user'
+    });
+};
+
+export const likeForm = async (formId: string) => {
+    const pb = getPocketBase();
+    const userId = pb.authStore.model?.id;
+    
+    if (!userId) throw new Error('User not authenticated');
+    
+    return await pb.collection('likes').create({
+        user: userId,
+        form: formId
+    });
+};
+
+// Groups
+export const createGroup = async (data: { name: string, description: string, avatar?: File }) => {
+    const pb = getPocketBase();
+    const userId = pb.authStore.model?.id;
+    
+    if (!userId) throw new Error('User not authenticated');
+    
+    return await pb.collection(Collections.Groups).create<GroupsResponse>({
+        ...data,
+        members: [userId],
+        admins: [userId]
+    });
+};
+
+export const getGroups = async (page = 1, perPage = 20) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Groups).getList<GroupsResponse>(page, perPage, {
+        sort: 'name'
+    });
+};
+
+export const getGroup = async (groupId: string) => {
+    const pb = getPocketBase();
+    return await pb.collection(Collections.Groups).getOne<GroupsResponse>(groupId, {
+        expand: 'members,admins'
+    });
+};
+
+// Messages
+export const sendPrivateMessage = async (receiverId: string, content: string) => {
+    const pb = getPocketBase();
+    const userId = pb.authStore.model?.id;
+    
+    if (!userId) throw new Error('User not authenticated');
+    
+    return await pb.collection(Collections.Messages).create<MessagesResponse>({
+        content,
+        sender: userId,
+        receiver: receiverId,
+        isGroupMessage: false,
+        isRead: false
+    });
+};
+
+export const sendGroupMessage = async (groupId: string, content: string) => {
+    const pb = getPocketBase();
+    const userId = pb.authStore.model?.id;
+    
+    if (!userId) throw new Error('User not authenticated');
+    
+    return await pb.collection(Collections.Messages).create<MessagesResponse>({
+        content,
+        sender: userId,
+        group: groupId,
+        isGroupMessage: true,
+        isRead: false
+    });
+};
+
+export const getPrivateMessages = async (userId: string, page = 1, perPage = 50) => {
+    const pb = getPocketBase();
+    const currentUserId = pb.authStore.model?.id;
+    
+    if (!currentUserId) throw new Error('User not authenticated');
+    
+    return await pb.collection(Collections.Messages).getList<MessagesResponse>(page, perPage, {
+        filter: `(sender = "${currentUserId}" && receiver = "${userId}") || (sender = "${userId}" && receiver = "${currentUserId}")`,
+        sort: 'created',
+        expand: 'sender,receiver'
+    });
+};
+
+export const getGroupMessages = async (groupId: string, page = 1, perPage = 50) => {
+    const pb = getPocketBase();
+    
+    return await pb.collection(Collections.Messages).getList<MessagesResponse>(page, perPage, {
+        filter: `group = "${groupId}" && isGroupMessage = true`,
+        sort: 'created',
+        expand: 'sender'
+    });
+};
+
+// pocketbase-typegen.config.ts
+import { generateTypes } from 'pocketbase-typegen';
+
+generateTypes({
+    out: './src/types/pocketbase-types.ts',
+    url: 'http://127.0.0.1:8090',
+    // Optional: provide admin credentials for schema access
+    username: 'revy8k@gmail.com', 
+    password: 'Rama28082808',
+    schemaOptions: {
+        includeCollectionRelationLinks: true,
+    },
+    // Map PocketBase types to TypeScript types
+    typeMapping: {
+        'json': 'Record<string, any>',
+    },
+});
+
+// src/components/auth/LoginForm.tsx
+import { useState } from 'react';
+import { usePocketBase } from '@/lib/pocketbase/client';
+
+export default function LoginForm() {
+    const { login, loginWithOAuth } = usePocketBase();
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+        
+        try {
+            const result = await login(email, password);
+            if (!result.success) {
+                setError('Invalid email or password');
+            }
+        } catch (err) {
+            setError('An error occurred during login');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleOAuthLogin = async (provider: 'google' | 'github') => {
+        setIsLoading(true);
+        setError('');
+        
+        try {
+            await loginWithOAuth(provider);
+        } catch (err) {
+            setError(`Failed to login with ${provider}`);
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gray-50">
+            <div className="w-full max-w-md p-8 bg-white rounded-lg shadow-md">
+                <h1 className="mb-6 text-2xl font-bold text-center">Login</h1>
+                
+                {error && (
+                    <div className="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">
+                        {error}
+                    </div>
+                )}
+                
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label htmlFor="email" className="block mb-1 text-sm font-medium">
+                            Email
+                        </label>
+                        <input
+                            id="email"
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="w-full p-2 border rounded-md"
+                            required
+                        />
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="password" className="block mb-1 text-sm font-medium">
+                            Password
+                        </label>
+                        <input
+                            id="password"
+                            type="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="w-full p-2 border rounded-md"
+                            required
+                        />
+                    </div>
+                    
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full p-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        {isLoading ? 'Logging in...' : 'Login'}
+                    </button>
+                </form>
+                
+                <div className="mt-6">
+                    <div className="relative">
+                        <div className="absolute inset-0 flex items-center">
+                            <div className="w-full border-t border-gray-300"></div>
+                        </div>
+                        <div className="relative flex justify-center text-sm">
+                            <span className="px-2 text-gray-500 bg-white">Or continue with</span>
+                        </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-3 mt-6">
+                        <button
+                            onClick={() => handleOAuthLogin('google')}
+                            disabled={isLoading}
+                            className="flex items-center justify-center w-full p-2 text-white bg-red-500 rounded-md hover:bg-red-600 disabled:opacity-50"
+                        >
+                            Google
+                        </button>
+                        
+                        <button
+                            onClick={() => handleOAuthLogin('github')}
+                            disabled={isLoading}
+                            className="flex items-center justify-center w-full p-2 text-white bg-gray-800 rounded-md hover:bg-gray-900 disabled:opacity-50"
+                        >
+                            GitHub
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// src/components/auth/SetupProfile.tsx
+import { useState, useEffect } from 'react';
+import { usePocketBase } from '@/lib/pocketbase/client';
+import { useRouter } from 'next/navigation';
+
+export default function SetupProfile() {
+    const { pb, currentUser } = usePocketBase();
+    const router = useRouter();
+    
+    const [username, setUsername] = useState('');
+    const [name, setName] = useState('');
+    const [bio, setBio] = useState('');
+    const [tags, setTags] = useState<string[]>([]);
+    const [tagInput, setTagInput] = useState('');
+    const [avatar, setAvatar] = useState<File | null>(null);
+    const [avatarPreview, setAvatarPreview] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        if (currentUser) {
+            setUsername(currentUser.username || '');
+            setName(currentUser.name || '');
+            setBio(currentUser.bio || '');
+            setTags(currentUser.tags || []);
+        }
+    }, [currentUser]);
+
+    const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            setAvatar(file);
+            const reader = new FileReader();
+            reader.onload = () => {
+                setAvatarPreview(reader.result as string);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    const addTag = () => {
+        if (tagInput && !tags.includes(tagInput)) {
+            setTags([...tags, tagInput]);
+            setTagInput('');
+        }
+    };
+
+    const removeTag = (tagToRemove: string) => {
+        setTags(tags.filter(tag => tag !== tagToRemove));
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!currentUser?.id) return;
+        
+        setIsLoading(true);
+        setError('');
+        
+        try {
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('name', name);
+            formData.append('bio', bio);
+            formData.append('tags', JSON.stringify(tags));
+            formData.append('isSetupComplete', 'true');
+            
+            if (avatar) {
+                formData.append('avatar', avatar);
+            }
+            
+            await pb.collection('users').update(currentUser.id, formData);
+            router.push('/dashboard');
+        } catch (err: any) {
+            setError(err.message || 'Failed to update profile');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-screen p-4 bg-gray-50">
+            <div className="max-w-2xl p-8 mx-auto bg-white rounded-lg shadow-md">
+                <h1 className="mb-6 text-2xl font-bold text-center">Complete Your Profile</h1>
+                
+                {error && (
+                    <div className="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">
+                        {error}
+                    </div>
+                )}
+                
+                <form onSubmit={handleSubmit} className="space-y-6">
+                    <div className="flex flex-col items-center mb-6">
+                        <div className="relative w-24 h-24 mb-4 overflow-hidden rounded-full">
+                            <img 
+                                src={avatarPreview || '/default-avatar.png'} 
+                                alt="Profile avatar"
+                                className="object-cover w-full h-full"
+                            />
+                        </div>
+                        
+                        <label className="px-4 py-2 text-sm text-white bg-blue-600 rounded-md cursor-pointer hover:bg-blue-700">
+                            Upload Avatar
+                            <input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleAvatarChange}
+                                className="hidden"
+                            />
+                        </label>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                        <div>
+                            <label htmlFor="username" className="block mb-1 text-sm font-medium">
+                                Username *
+                            </label>
+                            <input
+                                id="username"
+                                type="text"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                className="w-full p-2 border rounded-md"
+                                required
+                            />
+                        </div>
+                        
+                        <div>
+                            <label htmlFor="name" className="block mb-1 text-sm font-medium">
+                                Display Name *
+                            </label>
+                            <input
+                                id="name"
+                                type="text"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                className="w-full p-2 border rounded-md"
+                                required
+                            />
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="bio" className="block mb-1 text-sm font-medium">
+                            Bio
+                        </label>
+                        <textarea
+                            id="bio"
+                            value={bio}
+                            onChange={(e) => setBio(e.target.value)}
+                            rows={3}
+                            className="w-full p-2 border rounded-md"
+                        />
+                    </div>
+                    
+                    <div>
+                        <label className="block mb-1 text-sm font-medium">
+                            Tags
+                        </label>
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                            {tags.map((tag) => (
+                                <span 
+                                    key={tag} 
+                                    className="flex items-center px-2 py-1 text-sm bg-blue-100 rounded-md"
+                                >
+                                    {tag}
+                                    <button
+                                        type="button"
+                                        onClick={() => removeTag(tag)}
+                                        className="ml-1 text-red-500"
+                                    >
+                                        ×
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                        <div className="flex">
+                            <input
+                                type="text"
+                                value={tagInput}
+                                onChange={(e) => setTagInput(e.target.value)}
+                                placeholder="Add a tag"
+                                className="flex-grow p-2 border rounded-l-md"
+                                onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        addTag();
+                                    }
+                                }}
+                            />
+                            <button
+                                type="button"
+                                onClick={addTag}
+                                className="px-4 py-2 text-white bg-blue-600 rounded-r-md hover:bg-blue-700"
+                            >
+                                Add
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className="w-full p-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        {isLoading ? 'Saving...' : 'Complete Setup'}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+}
+
+// src/app/api/auth/oauth-callback/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createPocketBase } from '@/lib/pocketbase/client';
+
+export async function GET(request: NextRequest) {
+    const url = new URL(request.url);
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const provider = url.searchParams.get('provider');
+    
+    if (!code || !state || !provider) {
+        return NextResponse.redirect(new URL('/login', request.url));
+    }
+    
+    try {
+        const pb = createPocketBase();
+        
+        // Complete the OAuth2 authentication flow
+        await pb.collection('users').authWithOAuth2(
+            provider,
+            code,
+            state,
+            new URL('/dashboard', request.url).toString()
+        );
+        
+        // Save the auth data to a cookie
+        const authData = pb.authStore.exportToCookie();
+        
+        // Check if setup is complete
+        const user = pb.authStore.model;
+        const redirectUrl = user?.isSetupComplete ? '/dashboard' : '/setup';
+        
+        return NextResponse.redirect(new URL(redirectUrl, request.url), {
+            headers: {
+                'Set-Cookie': authData
+            }
+        });
+    } catch (error) {
+        console.error('OAuth error:', error);
+        return NextResponse.redirect(new URL('/login?error=oauth', request.url));
+    }
+}
+
+// src/components/forms/FormCard.tsx
+import { useState } from 'react';
+import { FormsResponse, UsersResponse } from '@/types/pocketbase-types';
+import { usePocketBase } from '@/lib/pocketbase/client';
+import { likeForm } from '@/lib/pocketbase/collections';
+import Link from 'next/link';
+
+interface FormCardProps {
+    form: FormsResponse & {
+        expand?: {
+            user: UsersResponse;
+        };
+    };
+    showReplies?: boolean;
+    onReply?: () => void;
+}
+
+export default function FormCard({ form, showReplies = true, onReply }: FormCardProps) {
+    const { pb, currentUser } = usePocketBase();
+    const [isLiked, setIsLiked] = useState(form.likes?.includes(currentUser?.id || ''));
+    const [likesCount, setLikesCount] = useState(form.likes?.length || 0);
+    const [repliesCount, setRepliesCount] = useState(form.replies?.length || 0);
+    
+    const formattedDate = new Date(form.created).toLocaleDateString('en-US', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+    });
+    
+    const handleLike = async () => {
+        if (!currentUser) return;
+        
+        try {
+            if (!isLiked) {
+                await likeForm(form.id);
+                setIsLiked(true);
+                setLikesCount(prev => prev + 1);
+            } else {
+                // Find and delete the like record
+                const records = await pb.collection('likes').getList(1, 1, {
+                    filter: `user="${currentUser.id}" && form="${form.id}"`
+                });
+                
+                if (records.items.length > 0) {
+                    await pb.collection('likes').delete(records.items[0].id);
+                    setIsLiked(false);
+                    setLikesCount(prev => prev - 1);
+                }
+            }
+        } catch (error) {
+            console.error('Error toggling like:', error);
+        }
+    };
+
+    return (
+        <div className="p-4 mb-4 bg-white border rounded-lg shadow-sm">
+            <div className="flex items-start mb-3">
+                <Link href={`/profile/${form.expand?.user.username || ''}`} className="flex-shrink-0">
+                    <img
+                        src={form.expand?.user.avatar ? `${pb.baseUrl}/api/files/users/${form.expand.user.id}/${form.expand.user.avatar}` : '/default-avatar.png'}
+                        alt={form.expand?.user.name || 'User'}
+                        className="w-10 h-10 rounded-full"
+                    />
+                </Link>
+                
+                <div className="ml-3">
+                    <div className="flex items-center">
+                        <Link href={`/profile/${form.expand?.user.username || ''}`} className="font-medium hover:underline">
+                            {form.expand?.user.name || 'User'}
+                        </Link>
+                        
+                        <span className="ml-2 text-sm text-gray-500">
+                            @{form.expand?.user.username || 'user'}
+                        </span>
+                        
+                        <span className="mx-2 text-gray-300">•</span>
+                        
+                        <span className="text-sm text-gray-500">
+                            {formattedDate}
+                        </span>
+                    </div>
+                    
+                    <Link href={`/forms/${form.id}`}>
+                        <h3 className="mt-1 font-semibold hover:underline">
+                            {form.title}
+                        </h3>
+                    </Link>
+                </div>
+            </div>
+            
+            <div className="mb-4">
+                <p className="text-gray-800">{form.content}</p>
+            </div>
+            
+            <div className="flex items-center justify-between pt-2 text-gray-600 border-t">
+                <div className="flex items-center space-x-6">
+                    <button
+                        onClick={handleLike}
+                        className={`flex items-center space-x-1 ${isLiked ? 'text-red-500' : ''}`}
+                    >
+                        <svg className="w-5 h-5" fill={isLiked ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+                        </svg>
+                        <span>{likesCount}</span>
+                    </button>
+                    
+                    {showReplies && (
+                        <button
+                            onClick={onReply}
+                            className="flex items-center space-x-1"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                            </svg>
+                            <span>{repliesCount}</span>
+                        </button>
+                    )}
+                </div>
+                
+                <Link href={`/forms/${form.id}`} className="text-sm hover:underline">
+                    View {repliesCount > 0 ? `replies (${repliesCount})` : 'details'}
+                </Link>
+            </div>
+        </div>
+    );
+}
+
+// src/components/forms/CreateFormModal.tsx
+import { useState } from 'react';
+import { createForm } from '@/lib/pocketbase/collections';
+
+interface CreateFormModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    parentFormId?: string;
+    onSuccess?: () => void;
+}
+
+export default function CreateFormModal({ isOpen, onClose, parentFormId, onSuccess }: CreateFormModalProps) {
+    const [title, setTitle] = useState('');
+    const [content, setContent] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    if (!isOpen) return null;
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+        
+        try {
+            const formData = {
+                title,
+                content,
+                ...(parentFormId ? { parentForm: parentFormId } : {})
+            };
+            
+            await createForm(formData);
+            
+            setTitle('');
+            setContent('');
+            onSuccess?.();
+            onClose();
+        } catch (err: any) {
+            setError(err.message || 'Failed to create post');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div className="w-full max-w-lg p-6 bg-white rounded-lg shadow-xl">
+                <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-semibold">
+                        {parentFormId ? 'Reply to Post' : 'Create New Post'}
+                    </h2>
+                    
+                    <button
+                        onClick={onClose}
+                        className="text-gray-500 hover:text-gray-700"
+                    >
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                
+                {error && (
+                    <div className="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">
+                        {error}
+                    </div>
+                )}
+                
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    {!parentFormId && (
+                        <div>
+                            <label htmlFor="title" className="block mb-1 text-sm font-medium">
+                                Title *
+                            </label>
+                            <input
+                                id="title"
+                                type="text"
+                                value={title}
+                                onChange={(e) => setTitle(e.target.value)}
+                                className="w-full p-2 border rounded-md"
+                                required={!parentFormId}
+                            />
+                        </div>
+                    )}
+                    
+                    <div>
+                        <label htmlFor="content" className="block mb-1 text-sm font-medium">
+                            Content *
+                        </label>
+                        <textarea
+                            id="content"
+                            value={content}
+                            onChange={(e) => setContent(e.target.value)}
+                            rows={5}
+                            className="w-full p-2 border rounded-md"
+                            required
+                        />
+                    </div>
+                    
+                    <div className="flex justify-end space-x-3">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="px-4 py-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300"
+                        >
+                            Cancel
+                        </button>
+                        
+                        <button
+                            type="submit"
+                            disabled={isLoading}
+                            className="px-4 py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+                        >
+                            {isLoading ? 'Posting...' : (parentFormId ? 'Reply' : 'Post')}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+}
+
+// src/components/forms/FormsList.tsx
+import { useState, useEffect } from 'react';
+import { FormsResponse } from '@/types/pocketbase-types';
+import FormCard from './FormCard';
+import CreateFormModal from './CreateFormModal';
+import { getForms } from '@/lib/pocketbase/collections';
+
+export default function FormsList() {
+    const [forms, setForms] = useState<FormsResponse[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+    
+    const loadForms = async (reset = false) => {
+        try {
+            setIsLoading(true);
+            const currentPage = reset ? 1 : page;
+            const response = await getForms(currentPage);
+            
+            if (reset) {
+                setForms(response.items);
+            } else {
+                setForms(prev => [...prev, ...response.items]);
+            }
+            
+            setHasMore(response.totalPages > currentPage);
+            if (!reset) {
+                setPage(prev => prev + 1);
+            }
+        } catch (err: any) {
+            setError(err.message || 'Failed to load posts');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+    
+    useEffect(() => {
+        loadForms();
+    }, []);
+    
+    const handleRefresh = () => {
+        setPage(1);
+        loadForms(true);
+    };
+
+    return (
+        <div>
+            <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-semibold">Posts</h2>
+                
+                <button
+                    onClick={() => setIsCreateModalOpen(true)}
+                    className="flex items-center px-4 py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                >
+                    <svg className="w-5 h-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    New Post
+                </button>
+            </div>
+            
+            {error && (
+                <div className="p-4 mb-4 text-red-700 bg-red-100 rounded-lg">
+                    {error}
+                    <button
+                        onClick={handleRefresh}
+                        className="ml-2 underline"
+                    >
+                        Try again
+                    </button>
+                </div>
+            )}
+            
+            <div className="space-y-4">
+                {forms.map(form => (
+                    <FormCard
+                        key={form.id}
+                        form={form}
+                        onReply={() => setIsCreateModalOpen(true)}
+                    />
+                ))}
+            </div>
+            
+            {isLoading && (
+                <div className="flex justify-center py-4">
+                    <div className="w-8 h-8 border-b-2 border-blue-600 rounded-full animate-spin"></div>
+                </div>
+            )}
+            
+            {!isLoading && hasMore && (
+                <div className="flex justify-center mt-6">
+                    <button
+                        onClick={() => loadForms()}
+                        className="px-4 py-2 text-blue-600 border border-blue-600 rounded-md hover:bg-blue-50"
+                    >
+                        Load More
+                    </button>
+                </div>
+            )}
+            
+            <CreateFormModal
+                isOpen={isCreateModalOpen}
+                onClose={() => setIsCreateModalOpen(false)}
+                onSuccess={handleRefresh}
+            />
+        </div>
+    );
+}
+
+// src/app/forms/[id]/page.tsx
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useParams } from 'next/navigation';
+import { FormsResponse } from '@/types/pocketbase-types';
+import { usePocketBase } from '@/lib/pocketbase/client';
+import FormCard from '@/components/forms/FormCard';
+import CreateFormModal from '@/components/forms/CreateFormModal';
+import { getFormReplies } from '@/lib/pocketbase/collections';
+
+export default function FormDetailsPage() {
+    const params = useParams();
+    const formId = params.id as string;
+    const { pb } = usePocketBase();
+    
+    const [form, setForm] = useState<FormsResponse | null>(null);
+    const [replies, setReplies] = useState<FormsResponse[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isRepliesLoading, setIsRepliesLoading] = useState(true);
+    const [error, setError] = useState('');
+    const [isReplyModalOpen, setIsReplyModalOpen] = useState(false);
+
+    useEffect(() => {
+        const loadForm = async () => {
+            try {
+                setIsLoading(true);
+                const record = await pb.collection('forms').getOne<FormsResponse>(formId, {
+                    expand: 'user'
+                });
+                setForm(record);
+            } catch (err: any) {
+                setError(err.message || 'Failed to load post');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        const loadReplies = async () => {
+            try {
+                setIsRepliesLoading(true);
+                const response = await getFormReplies(formId);
+                setReplies(response.items);
+            } catch (err: any) {
+                setError(err.message || 'Failed to load replies');
+            } finally {
+                setIsRepliesLoading(false);
+            }
+        };
+
+        loadForm();
+        loadReplies();
+    }, [formId, pb]);
+
+    const handleReplySuccess = async () => {
+        try {
+            const response = await getFormReplies(formId);
+            setReplies(response.items);
+        } catch (err) {
+            console.error('Failed to refresh replies:', err);
+        }
+    };
+
+    if (isLoading) {
+        return (
+            <div className="flex justify-center p-8">
+                <div className="w-10 h-10 border-b-2 border-blue-600 rounded-full animate-spin"></div>
+            </div>
+        );
+    }
+
+    if (error) {
+        return (
+            <div className="p-6 text-red-700 bg-red-100 rounded-lg">
+                <h2 className="mb-2 text-lg font-semibold">Error</h2>
+                <p>{error}</p>
+            </div>
+        );
+    }
+
+    if (!form) {
+        return (
+            <div className="p-6 text-gray-700 bg-gray-100 rounded-lg">
+                <h2 className="mb-2 text-lg font-semibold">Post Not Found</h2>
+                <p>The post you're looking for doesn't exist or has been removed.</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="max-w-4xl mx-auto">
+            <div className="mb-6">
+                <FormCard form={form} showReplies={false} />
+            </div>
+            
+            <div className="mb-6">
+                <button
+                    onClick={() => setIsReplyModalOpen(true)}
+                    className="flex items-center px-4 py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700"
+                >
+                    <svg className="w-5 h-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                    </svg>
+                    Reply to Post
+                </button>
+            </div>
+            
+            <div className="mb-4">
+                <h3 className="text-lg font-semibold">
+                    Replies {replies.length > 0 && `(${replies.length})`}
+                </h3>
+            </div>
+            
+            {isRepliesLoading ? (
+                <div className="flex justify-center p-4">
+                    <div className="w-8 h-8 border-b-2 border-blue-600 rounded-full animate-spin"></div>
+                </div>
+            ) : (
+                <div className="pl-6 space-y-4 border-l-2 border-gray-200">
+                    {replies.length > 0 ? (
+                        replies.map(reply => (
+                            <FormCard key={reply.id} form={reply} showReplies={false} />
+                        ))
+                    ) : (
+                        <p className="text-gray-500">No replies yet. Be the first to reply!</p>
+                    )}
+                </div>
+            )}
+            
+            <CreateFormModal
+                isOpen={isReplyModalOpen}
+                onClose={() => setIsReplyModalOpen(false)}
+                parentFormId={formId}
+                onSuccess={handleReplySuccess}
+            />
+        </div>
+    );
+}
+
+
+// src/components/profile/ProfileHeader.tsx
+import { useState } from 'react';
+import { UsersResponse } from '@/types/pocketbase-types';
+import { usePocketBase } from '@/lib/pocketbase/client';
+import Link from 'next/link';
+import ReactMarkdown from 'react-markdown';
+
+interface ProfileHeaderProps {
+    user: UsersResponse;
+    isOwnProfile: boolean;
+    onEditProfile?: () => void;
+}
+
+export default function ProfileHeader({ user, isOwnProfile, onEditProfile }: ProfileHeaderProps) {
+    const { pb, currentUser } = usePocketBase();
+    const [isFollowing, setIsFollowing] = useState(false); // Would need to check from DB
+    const [followersCount, setFollowersCount] = useState(user.followersCount || 0);
+    
+    const handleFollowToggle = async () => {
+        if (!currentUser) return;
+        
+        try {
+            if (!isFollowing) {
+                // Create follow record
+                await pb.collection('follows').create({
+                    follower: currentUser.id,
+                    following: user.id
+                });
+                setIsFollowing(true);
+                setFollowersCount(prev => prev + 1);
+            } else {
+                // Find and delete follow record
+                const records = await pb.collection('follows').getList(1, 1, {
+                    filter: `follower="${currentUser.id}" && following="${user.id}"`
+                });
+                
+                if (records.items.length > 0) {
+                    await pb.collection('follows').delete(records.items[0].id);
+                    setIsFollowing(false);
+                    setFollowersCount(prev => prev - 1);
+                }
+            }
+        } catch (error) {
+            console.error('Error toggling follow:', error);
+        }
+    };
+
+    return (
+        <div className="p-6 mb-6 bg-white border rounded-lg shadow-sm">
+            <div className="flex flex-col items-center md:flex-row md:items-start">
+                <div className="flex-shrink-0 mb-4 md:mb-0">
+                    <img
+                        src={user.avatar ? `${pb.baseUrl}/api/files/users/${user.id}/${user.avatar}` : '/default-avatar.png'}
+                        alt={user.name}
+                        className="object-cover w-32 h-32 rounded-full md:w-40 md:h-40"
+                    />
+                </div>
+                
+                <div className="flex-grow ml-0 text-center md:ml-6 md:text-left">
+                    <div className="flex flex-col items-center justify-between mb-4 md:flex-row">
+                        <div>
+                            <h1 className="text-2xl font-bold">{user.name}</h1>
+                            <p className="text-gray-600">@{user.username}</p>
+                        </div>
+                        
+                        <div className="mt-3 md:mt-0">
+                            {isOwnProfile ? (
+                                <button
+                                    onClick={onEditProfile}
+                                    className="px-4 py-2 text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300"
+                                >
+                                    Edit Profile
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={handleFollowToggle}
+                                    className={`px-4 py-2 rounded-md ${
+                                        isFollowing
+                                            ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                            : 'bg-blue-600 text-white hover:bg-blue-700'
+                                    }`}
+                                >
+                                    {isFollowing ? 'Following' : 'Follow'}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                    
+                    <div className="mb-4">
+                        <p className="text-gray-700">{user.bio}</p>
+                    </div>
+                    
+                    {user.tags && user.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mb-4">
+                            {user.tags.map(tag => (
+                                <span key={tag} className="px-2 py-1 text-sm bg-gray-100 rounded-full">
+                                    {tag}
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    
+                    <div className="flex justify-center space-x-6 text-gray-600 md:justify-start">
+                        <div className="text-center">
+                            <span className="block text-lg font-semibold">{user.postsCount || 0}</span>
+                            <span className="text-sm">Posts</span>
+                        </div>
+                        
+                        <div className="text-center">
+                            <span className="block text-lg font-semibold">{followersCount}</span>
+                            <span className="text-sm">Followers</span>
+                        </div>
+                        
+                        <div className="text-center">
+                            <span className="block text-lg font-semibold">{user.followingCount || 0}</span>
+                            <span className="text-sm">Following</span>
+                        </div>
+                        
+                        <div className="text-center">
+                            <span className="block text-lg font-semibold">{user.likesCount || 0}</span>
+                            <span className="text-sm">Likes</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            {user.customMd && (
+                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                    <ReactMarkdown>{user.customMd}</ReactMarkdown>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// src/components/profile/EditProfileModal.tsx
+import { useState, useEffect } from 'react';
+import { UsersResponse } from '@/types/pocketbase-types';
+import { usePocketBase } from '@/lib/pocketbase/client';
+import { updateUser } from '@/lib/pocketbase/collections';
+
+interface EditProfileModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    user: UsersResponse;
+    onSuccess?: () => void;
+}
+
+export default function EditProfileModal({ isOpen, onClose, user, onSuccess }: EditProfileModalProps) {
+    const [name, setName] = useState(user.name || '');
+    const [bio, setBio] = useState(user.bio || '');
+    const [status, setStatus] = useState(user.status || '');
+    const [tags, setTags] = useState<string[]>(user.tags || []);
+    const [tagInput, setTagInput] = useState('');
+    const [customMd, setCustomMd] = useState(user.customMd || '');
+    const [avatar, setAvatar] = useState<File | null>(null);
+    const [avatarPreview, setAvatarPreview] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+    const { pb } = usePocketBase();
+
+    useEffect(() => {
+        if (user.avatar) {
+            setAvatarPreview(`${pb.baseUrl}/api/files/users/${user.id}/${user.avatar}`);
+        }
+    }, [user, pb]);
+
+    if (!isOpen) return null;
+
+    const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            setAvatar(file);
+            const reader = new FileReader();
+            reader.onload = () => {
+                setAvatarPreview(reader.result as string);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    const addTag = () => {
+        if (tagInput && !tags.includes(tagInput)) {
+            setTags([...tags, tagInput]);
+            setTagInput('');
+        }
+    };
+
+    const removeTag = (tagToRemove: string) => {
+        setTags(tags.filter(tag => tag !== tagToRemove));
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setError('');
+        
+        try {
+            const formData = new FormData();
+            formData.append('name', name);
+            formData.append('bio', bio);
+            formData.append('status', status);
+            formData.append('tags', JSON.stringify(tags));
+            formData.append('customMd', customMd);
+            
+            if (avatar) {
+                formData.append('avatar', avatar);
+            }
+            
+            await updateUser(user.id, formData as any);
+            onSuccess?.();
+            onClose();
+        } catch (err: any) {
+            setError(err.message || 'Failed to update profile');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 overflow-y-auto">
+            <div className="w-full max-w-2xl p-6 bg-white rounded-lg shadow-xl my-8">
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-semibold">Edit Profile</h2>
+                    
+                    <button
+                        onClick={onClose}
+                        className="text-gray-500 hover:text-gray-700"
+                    >
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                
+                {error && (
+                    <div className="p-3 mb-4 text-sm text-red-700 bg-red-100 rounded-lg">
+                        {error}
+                    </div>
+                )}
+                
+                <form onSubmit={handleSubmit} className="space-y-6">
+                    <div className="flex flex-col items-center mb-6">
+                        <div className="relative w-24 h-24 mb-4 overflow-hidden rounded-full">
+                            <img 
+                                src={avatarPreview || '/default-avatar.png'} 
+                                alt="Profile avatar"
+                                className="object-cover w-full h-full"
+                            />
+                        </div>
+                        
+                        <label className="px-4 py-2 text-sm text-white bg-blue-600 rounded-md cursor-pointer hover:bg-blue-700">
+                            Change Avatar
+                            <input
+                                type="file"
+                                accept="image/*"
+                                onChange={handleAvatarChange}
+                                className="hidden"
+                            />
+                        </label>
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="name" className="block mb-1 text-sm font-medium">
+                            Display Name
+                        </label>
+                        <input
+                            id="name"
+                            type="text"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            className="w-full p-2 border rounded-md"
+                        />
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="bio" className="block mb-1 text-sm font-medium">
+                            Bio
+                        </label>
+                        <textarea
+                            id="bio"
+                            value={bio}
+                            onChange={(e) => setBio(e.target.value)}
+                            rows={3}
+                            className="w-full p-2 border rounded-md"
+                        />
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="status" className="block mb-1 text-sm font-medium">
+                            Status
+                        </label>
+                        <input
+                            id="status"
+                            type="text"
+                            value={status}
+                            onChange={(e) => setStatus(e.target.value)}
+                            placeholder="What's happening?"
+                            className="w-full p-2 border rounded-md"
+                        />
+                    </div>
+                    
+                    <div>
+                        <label className="block mb-1 text-sm font-medium">
+                            Tags
+                        </label>
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                            {tags.map((tag) => (
+                                <span 
+                                    key={tag} 
+                                    className="flex items-center px-2 py-1 text-sm bg-blue-100 rounded-md"
+                                >
+                                    {tag}
+                                    <button
+                                        type="button"
+                                        onClick={() => removeTag(tag)}
+                                        className="ml-1 text-red-500"
+                                    >
+                                        ×
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                        <div className="flex">
+                            <input
+                                type="text"
+                                value={tagInput}
+                                onChange={(e) => setTagInput(e.target.value)}
+                                placeholder="Add a tag"
+                                className="flex-grow p-2 border rounded-l-md"
+                                onKeyPress={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        addTag();
+                                    }
+                                }}
+                            />
+                            <button
+                                type="button"
+                                onClick={addTag}
+                                className="px-4 py-2 text-white bg-blue-600 rounded-r-md hover:bg-blue-700"
+                            >
+                                Add
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label htmlFor="customMd" className="block mb-1 text-sm font-medium">
+                            Custom Profile Content (Markdown)
+                        </label>
+                        <textarea
+                            id="customMd"
+                            value={customMd}
+                            onChange={(e) => setCustomMd(e.target.value)}
+                            rows={8}
+                            className="w-full p-2 font-mono border rounded-md"
+                            placeholder="# About Me\n\nYou can use **Markdown** to format your profile."
+                        />
+                    </div>
+                    
+                    <div className="flex justify-end space- 
+// -- process stopped because token has run out -- //
